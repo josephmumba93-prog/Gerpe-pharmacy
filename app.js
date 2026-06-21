@@ -5,8 +5,8 @@
 // ---------- 1. SUPABASE CONFIG ----------
 // Replace these two values with your own Supabase project credentials.
 // Find them in: Supabase Dashboard > Project Settings > API
-const SUPABASE_URL = "YOUR_SUPABASE_URL_HERE";
-const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE";
+const SUPABASE_URL = "https://jrxvoxddcbugbdoecekb.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpyeHZveGRkY2J1Z2Jkb2VjZWtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIwMzExNjcsImV4cCI6MjA5NzYwNzE2N30.eYFMaywJyjsGni0txlO1E5PnNFvJCPeSxObm9egX0us";
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
