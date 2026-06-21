@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Gerpe Pharmacy — Management System</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💊</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --navy:#0f3460;
+  --navy-dark:#0a2647;
+  --teal:#0e9594;
+  --teal-light:#14b8a6;
+  --bg:#f4f6f9;
+  --card:#ffffff;
+  --text:#1a2332;
+  --muted:#64748b;
+  --border:#e2e8f0;
+  --danger:#dc2626;
+  --danger-bg:#fef2f2;
+  --warn:#d97706;
+  --warn-bg:#fffbeb;
+  --ok:#16a34a;
+  --ok-bg:#f0fdf4;
+  --radius:10px;
+  --shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.04);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  font-size:14px;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none;}
+button{font-family:inherit;cursor:pointer;}
+input,select,textarea{font-family:inherit;font-size:14px;}
+
+/* ---------- Loading ---------- */
+#loadingScreen{
+  position:fixed;inset:0;background:var(--navy-dark);
+  display:flex;align-items:center;justify-content:center;flex-direction:column;
+  color:#fff;z-index:9999;gap:12px;
+}
+.spinner{
+  width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);
+  border-top-color:var(--teal-light);border-radius:50%;
+  animation:spin 0.8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* ---------- Auth screen ---------- */
+#authScreen{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,var(--navy-dark),var(--navy));
+  padding:20px;
+}
+.auth-box{
+  background:var(--card);border-radius:16px;padding:36px 32px;
+  width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,0.3);
+}
+.auth-logo{
+  display:flex;align-items:center;gap:10px;justify-content:center;margin-bottom:6px;
+}
+.auth-logo .icon{font-size:32px;}
+.auth-logo h1{font-size:20px;color:var(--navy);font-weight:700;}
+.auth-sub{text-align:center;color:var(--muted);font-size:13px;margin-bottom:24px;}
+.form-group{margin-bottom:16px;}
+.form-group label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.03em;}
+.form-group input,.form-group select,.form-group textarea{
+  width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;
+  transition:border-color .15s;background:#fff;color:var(--text);
+}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{
+  outline:none;border-color:var(--teal);
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:10px 18px;border-radius:8px;border:none;font-weight:600;font-size:13.5px;
+  transition:all .15s;white-space:nowrap;
+}
+.btn-primary{background:var(--teal);color:#fff;}
+.btn-primary:hover{background:var(--teal-light);}
+.btn-block{width:100%;}
+.btn-secondary{background:#fff;color:var(--text);border:1.5px solid var(--border);}
+.btn-secondary:hover{background:#f8fafc;}
+.btn-danger{background:var(--danger-bg);color:var(--danger);border:1.5px solid #fecaca;}
+.btn-danger:hover{background:#fee2e2;}
+.btn-sm{padding:6px 12px;font-size:12.5px;}
+.btn:disabled{opacity:0.5;cursor:not-allowed;}
+.auth-error{
+  background:var(--danger-bg);color:var(--danger);padding:10px 12px;border-radius:8px;
+  font-size:13px;margin-bottom:16px;display:none;
+}
+.auth-toggle{text-align:center;margin-top:18px;font-size:13px;color:var(--muted);}
+.auth-toggle a{color:var(--teal);font-weight:600;cursor:pointer;}
+
+/* ---------- App layout ---------- */
+#app{display:none;min-height:100vh;}
+.layout{display:flex;min-height:100vh;}
+
+/* Sidebar */
+.sidebar{
+  width:230px;background:var(--navy-dark);color:#fff;flex-shrink:0;
+  display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;
+  transition:transform .2s;
+}
+.sidebar-header{
+  padding:20px 18px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid rgba(255,255,255,0.08);
+}
+.sidebar-header .icon{font-size:26px;}
+.sidebar-header .name{font-size:15px;font-weight:700;line-height:1.2;}
+.sidebar-header .sub{font-size:11px;color:rgba(255,255,255,0.5);}
+.nav-section{padding:14px 0;flex:1;overflow-y:auto;}
+.nav-label{
+  padding:8px 18px 6px;font-size:10.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:0.06em;color:rgba(255,255,255,0.35);
+}
+.nav-item{
+  display:flex;align-items:center;gap:11px;padding:10px 18px;color:rgba(255,255,255,0.75);
+  font-size:13.5px;font-weight:500;cursor:pointer;border-left:3px solid transparent;
+  transition:all .12s;position:relative;
+}
+.nav-item:hover{background:rgba(255,255,255,0.06);color:#fff;}
+.nav-item.active{background:rgba(14,148,148,0.18);color:#fff;border-left-color:var(--teal-light);}
+.nav-item .ic{font-size:16px;width:20px;text-align:center;}
+.nav-badge{
+  background:var(--danger);color:#fff;font-size:10px;font-weight:700;
+  border-radius:10px;padding:1px 6px;margin-left:auto;
+}
+.sidebar-footer{padding:14px 18px;border-top:1px solid rgba(255,255,255,0.08);}
+.user-chip{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.user-avatar{
+  width:34px;height:34px;border-radius:50%;background:var(--teal);
+  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0;
+}
+.user-info .uname{font-size:13px;font-weight:600;}
+.user-info .urole{font-size:11px;color:rgba(255,255,255,0.5);text-transform:capitalize;}
+.logout-btn{
+  width:100%;background:rgba(255,255,255,0.08);color:#fff;border:none;padding:8px;
+  border-radius:6px;font-size:12.5px;font-weight:600;
+}
+.logout-btn:hover{background:rgba(255,255,255,0.15);}
+
+/* Main content */
+.main{margin-left:230px;flex:1;min-width:0;}
+.topbar{
+  background:#fff;border-bottom:1px solid var(--border);padding:14px 28px;
+  display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;
+}
+.topbar h2{font-size:18px;font-weight:700;}
+.topbar-right{display:flex;align-items:center;gap:14px;}
+.menu-toggle{display:none;background:none;border:none;font-size:22px;color:var(--navy);}
+.bell-btn{position:relative;background:none;border:none;font-size:19px;color:var(--muted);padding:6px;}
+.bell-dot{
+  position:absolute;top:2px;right:2px;width:8px;height:8px;background:var(--danger);
+  border-radius:50%;display:none;
+}
+.content{padding:24px 28px;max-width:1400px;}
+
+/* Cards & stats */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px;}
+.stat-card{
+  background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);
+  border:1px solid var(--border);display:flex;flex-direction:column;gap:4px;
+}
+.stat-card .label{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.02em;}
+.stat-card .value{font-size:26px;font-weight:700;color:var(--navy);}
+.stat-card .sub{font-size:12px;color:var(--muted);}
+.stat-card.warn .value{color:var(--warn);}
+.stat-card.danger .value{color:var(--danger);}
+.stat-card.ok .value{color:var(--ok);}
+
+.card{
+  background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);
+  border:1px solid var(--border);margin-bottom:20px;
+}
+.card-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);display:flex;
+  align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;
+}
+.card-header h3{font-size:15px;font-weight:700;}
+.card-body{padding:20px;}
+.card-actions{display:flex;gap:8px;flex-wrap:wrap;}
+
+/* Tables */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:13.5px;}
+thead th{
+  text-align:left;padding:10px 14px;background:#f8fafc;color:var(--muted);
+  font-weight:700;font-size:11.5px;text-transform:uppercase;letter-spacing:0.03em;
+  border-bottom:2px solid var(--border);white-space:nowrap;
+}
+tbody td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle;}
+tbody tr:hover{background:#fafbfc;}
+tbody tr:last-child td{border-bottom:none;}
+.badge{
+  display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;
+  text-transform:uppercase;letter-spacing:0.02em;
+}
+.badge-ok{background:var(--ok-bg);color:var(--ok);}
+.badge-warn{background:var(--warn-bg);color:var(--warn);}
+.badge-danger{background:var(--danger-bg);color:var(--danger);}
+.badge-muted{background:#f1f5f9;color:var(--muted);}
+.row-actions{display:flex;gap:6px;}
+.icon-btn{
+  background:none;border:1px solid var(--border);border-radius:6px;padding:5px 8px;
+  font-size:12.5px;color:var(--muted);
+}
+.icon-btn:hover{background:#f1f5f9;}
+.icon-btn.danger:hover{background:var(--danger-bg);color:var(--danger);border-color:#fecaca;}
+
+.empty-state{text-align:center;padding:50px 20px;color:var(--muted);}
+.empty-state .ic{font-size:42px;margin-bottom:10px;display:block;}
+
+/* Filters / toolbar */
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
+.search-box{position:relative;flex:1;min-width:180px;max-width:320px;}
+.search-box input{width:100%;padding:9px 12px 9px 34px;border:1.5px solid var(--border);border-radius:8px;}
+.search-box .ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted);}
+.filter-select{padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;background:#fff;color:var(--text);}
+
+/* Modal */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(15,20,30,0.55);display:none;
+  align-items:center;justify-content:center;z-index:1000;padding:20px;
+}
+.modal-overlay.show{display:flex;}
+.modal{
+  background:#fff;border-radius:14px;width:100%;max-width:520px;max-height:90vh;
+  overflow-y:auto;box-shadow:0 24px 70px rgba(0,0,0,0.35);
+}
+.modal.modal-lg{max-width:720px;}
+.modal-header{
+  padding:18px 22px;border-bottom:1px solid var(--border);display:flex;
+  align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;
+}
+.modal-header h3{font-size:16px;font-weight:700;}
+.modal-close{background:none;border:none;font-size:20px;color:var(--muted);line-height:1;padding:4px;}
+.modal-body{padding:22px;}
+.modal-footer{padding:16px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:520px){.form-row{grid-template-columns:1fr;}}
+
+/* Toast */
+#toastBox{position:fixed;bottom:24px;right:24px;z-index:2000;display:flex;flex-direction:column;gap:10px;}
+.toast{
+  background:#1a2332;color:#fff;padding:12px 18px;border-radius:8px;font-size:13.5px;
+  box-shadow:0 8px 24px rgba(0,0,0,0.25);min-width:220px;animation:slideIn .2s ease;
+  display:flex;align-items:center;gap:8px;
+}
+.toast.success{background:#15803d;}
+.toast.error{background:#b91c1c;}
+.toast.warn{background:#b45309;}
+@keyframes slideIn{from{transform:translateX(40px);opacity:0;}to{transform:translateX(0);opacity:1;}}
+
+/* role pill */
+.role-pill{
+  display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;
+  text-transform:capitalize;
+}
+.role-pill.admin{background:#ede9fe;color:#6d28d9;}
+.role-pill.staff{background:#e0f2fe;color:#0369a1;}
+
+/* Notification dropdown */
+.notif-panel{
+  position:absolute;top:50px;right:28px;width:340px;max-height:420px;overflow-y:auto;
+  background:#fff;border-radius:12px;box-shadow:0 16px 50px rgba(0,0,0,0.2);
+  border:1px solid var(--border);display:none;z-index:200;
+}
+.notif-panel.show{display:block;}
+.notif-item{padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;}
+.notif-item:last-child{border-bottom:none;}
+.notif-item .ntype{font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:3px;}
+.notif-item .ntime{font-size:11px;color:var(--muted);margin-top:3px;}
+.notif-empty{padding:30px 16px;text-align:center;color:var(--muted);font-size:13px;}
+.notif-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+.notif-header h4{font-size:13.5px;font-weight:700;}
+.notif-header button{background:none;border:none;color:var(--teal);font-size:12px;font-weight:600;}
+
+.hidden{display:none !important;}
+.text-muted{color:var(--muted);}
+.text-right{text-align:right;}
+.mt-2{margin-top:8px;}
+.mb-0{margin-bottom:0;}
+.help-text{font-size:11.5px;color:var(--muted);margin-top:4px;}
+
+/* Responsive */
+@media (max-width:880px){
+  .sidebar{transform:translateX(-100%);}
+  .sidebar.open{transform:translateX(0);}
+  .main{margin-left:0;}
+  .menu-toggle{display:block;}
+  .content{padding:18px 16px;}
+  .topbar{padding:12px 16px;}
+  .notif-panel{right:16px;width:calc(100vw - 32px);}
+}
+
+/* Print styles */
+@media print{
+  .sidebar,.topbar,.toolbar,.card-actions,.row-actions,.no-print{display:none !important;}
+  .main{margin-left:0;}
+  .content{padding:0;}
+  .card{box-shadow:none;border:none;}
+}
+</style>
+</head>
+<body>
+
+<!-- LOADING SCREEN -->
+<div id="loadingScreen">
+  <div class="spinner"></div>
+  <div>Loading Gerpe Pharmacy...</div>
+</div>
+
+<!-- AUTH SCREEN -->
+<div id="authScreen" style="display:none;">
+  <div class="auth-box">
+    <div class="auth-logo"><span class="icon">💊</span><h1>Gerpe Pharmacy</h1></div>
+    <div class="auth-sub">Management System</div>
+    <div class="auth-error" id="authError"></div>
+
+    <form id="loginForm">
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="loginEmail" required autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="loginPassword" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="loginBtn">Sign In</button>
+    </form>
+
+    <div class="auth-toggle">Need access? Contact your administrator to create an account.</div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app">
+  <div class="layout">
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="icon">💊</span>
+        <div>
+          <div class="name">Gerpe Pharmacy</div>
+          <div class="sub">Management System</div>
+        </div>
+      </div>
+      <nav class="nav-section" id="navSection">
+        <div class="nav-label">Overview</div>
+        <div class="nav-item" data-page="dashboard"><span class="ic">📊</span>Dashboard</div>
+
+        <div class="nav-label">Inventory</div>
+        <div class="nav-item" data-page="products"><span class="ic">📦</span>Products</div>
+        <div class="nav-item" data-page="categories"><span class="ic">🏷️</span>Categories</div>
+        <div class="nav-item" data-page="suppliers"><span class="ic">🚚</span>Suppliers</div>
+
+        <div class="nav-label">Transactions</div>
+        <div class="nav-item" data-page="purchases"><span class="ic">⬇️</span>Purchases</div>
+        <div class="nav-item" data-page="sales"><span class="ic">⬆️</span>Sales</div>
+
+        <div class="nav-label">Reports</div>
+        <div class="nav-item" data-page="reports"><span class="ic">📈</span>Reports</div>
+
+        <div class="nav-label admin-only">Administration</div>
+        <div class="nav-item admin-only" data-page="users"><span class="ic">👥</span>Users</div>
+        <div class="nav-item admin-only" data-page="settings"><span class="ic">⚙️</span>Settings</div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-chip">
+          <div class="user-avatar" id="userAvatar">?</div>
+          <div class="user-info">
+            <div class="uname" id="userName">—</div>
+            <div class="urole" id="userRole">—</div>
+          </div>
+        </div>
+        <button class="logout-btn" id="logoutBtn">Sign Out</button>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <div class="main">
+      <div class="topbar">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button class="menu-toggle" id="menuToggle">☰</button>
+          <h2 id="pageTitle">Dashboard</h2>
+        </div>
+        <div class="topbar-right">
+          <button class="bell-btn" id="bellBtn">🔔<span class="bell-dot" id="bellDot"></span></button>
+        </div>
+      </div>
+
+      <div class="notif-panel" id="notifPanel">
+        <div class="notif-header">
+          <h4>Notifications</h4>
+          <button id="markAllReadBtn">Mark all read</button>
+        </div>
+        <div id="notifList"><div class="notif-empty">No notifications</div></div>
+      </div>
+
+      <div class="content" id="pageContent">
+        <!-- page content injected here -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toastBox"></div>
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modalBox"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
