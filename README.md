@@ -94,6 +94,13 @@ default), where an Admin can promote it, rename it, or deactivate it.
 - **Reports** — date-range filtered: sales by product (with estimated
   profit), purchases by supplier, current inventory valuation. Every
   list page also has Export CSV and Print buttons.
+- **Import CSV** — every list page (Categories, Suppliers, Products,
+  Purchases, Sales) also has an **Import CSV** button next to Export.
+  Pick a `.csv` file and the app reads it, validates each row, and
+  shows a results summary: how many rows imported successfully and
+  which were skipped (with the reason — e.g. "Category not found,"
+  "Missing Cost Price"). One bad row never blocks the rest of the file.
+  See "How to import data" below for the column format each screen expects.
 - **Stock notifications** — the moment a sale drops a product to zero or
   below its reorder level, a notification is generated automatically
   (via a database trigger) and shows up in the bell icon.
@@ -108,7 +115,28 @@ default), where an Admin can promote it, rename it, or deactivate it.
   (Project → Database → Backups in your dashboard). No in-app action
   needed.
 
-## Notes on the data model
+## How to import data
+
+Each screen's **Import CSV** button expects a `.csv` file (not `.xlsx`) with specific column headers. If you have data in Excel, open it and use **File → Save As → CSV** (or **File → Download → Comma Separated Values** in Google Sheets) before importing — one sheet per file.
+
+Import in this order, since later sheets depend on earlier ones existing:
+
+**1. Categories** — columns: `Name` (or `Category Name`), `Description`
+**2. Suppliers** — columns: `Name` (or `Supplier Name`), `Contact Person`, `Phone`, `Email`, `Address`
+**3. Products** — columns: `Product Name`, `SKU`, `Category`, `Supplier`, `Unit`, `Cost Price (ZMW)`, `Selling Price (ZMW)`, `Opening Stock`, `Reorder Level`, `Expiry Date`
+  - `Category` and `Supplier` must exactly match a name already in the system (case-insensitive) — add them first via steps 1–2, or the row is skipped with a clear reason.
+  - `Expiry Date` accepts `YYYY-MM-DD` or `DD/MM/YYYY`. Leave blank if not applicable.
+**4. Purchases** — columns: `Product Name`, `Supplier`, `Quantity`, `Cost Price/Unit (ZMW)`, `Purchase Date`, `Invoice #`, `Notes`
+  - `Product Name` must already exist (via step 3).
+  - Each row increases that product's stock — multiple purchase rows for the same product are expected and fine.
+**5. Sales** — columns: `Product Name`, `Quantity`, `Price/Unit (ZMW)`, `Sale Date`, `Notes`
+  - Each row decreases stock. If a row would sell more than what's available at that point in the file, it's skipped (not the whole import) with a clear reason — the same protection as the manual "Record Sale" form.
+
+After choosing a file, you'll see a results screen: how many rows imported, how many were skipped, and the exact reason for each skip (e.g. *"Category 'Pain Relief' not found — add it first"*). Fix those specific rows in your source file and re-import just the corrected ones — already-imported rows won't be duplicated as long as names/SKUs match exactly.
+
+A ready-to-use sample data file (with Categories, Suppliers, Products, Purchases, and Sales already filled in) is available separately if you want to test the whole flow before entering real data.
+
+
 
 - One expiry date per product (not per batch) — keeps purchases simple:
   receiving new stock of an existing product just adds to its quantity

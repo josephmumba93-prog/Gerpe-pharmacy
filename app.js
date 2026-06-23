@@ -5,8 +5,8 @@
 // ---------- 1. SUPABASE CONFIG ----------
 // Replace these two values with your own Supabase project credentials.
 // Find them in: Supabase Dashboard > Project Settings > API
-const SUPABASE_URL = "https://jrxvoxddcbugbdoecekb.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpyeHZveGRkY2J1Z2Jkb2VjZWtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIwMzExNjcsImV4cCI6MjA5NzYwNzE2N30.eYFMaywJyjsGni0txlO1E5PnNFvJCPeSxObm9egX0us";
+const SUPABASE_URL = "YOUR_SUPABASE_URL_HERE";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE";
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -57,6 +57,39 @@ function timeAgo(d) {
 }
 function uid() { return Math.random().toString(36).slice(2,9); }
 
+// Parses a date string from CSV into 'YYYY-MM-DD' (what Postgres date columns expect).
+// Accepts: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY (ambiguous 2-part dates assume DD/MM/YYYY
+// since this app is used in Zambia). Returns null if blank or unparseable.
+function parseCSVDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  // Already ISO: YYYY-MM-DD
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  // DD/MM/YYYY or D/M/YYYY (also accepts '-' separator)
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) {
+    let [, a, b] = m;
+    const y = m[3];
+    let day = parseInt(a, 10), mo = parseInt(b, 10);
+    // If first part > 12, it must be the day (DD/MM/YYYY)
+    if (day > 12) { /* day, mo already correct */ }
+    else if (mo > 12) { [day, mo] = [mo, day]; } // swap: second part is actually the day
+    // else ambiguous below 12/12 — assume DD/MM/YYYY (Zambia convention)
+    if (mo < 1 || mo > 12 || day < 1 || day > 31) return null;
+    return `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  }
+  // Fallback: let JS try (handles things like "12 Jul 2026")
+  const dt = new Date(s);
+  if (!isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  return null;
+}
+
 function toast(msg, type='info') {
   const box = $('#toastBox');
   const el = document.createElement('div');
@@ -96,6 +129,106 @@ function exportCSV(filename, rows, headers) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   toast('Exported ' + filename, 'success');
+}
+
+// ---------- CSV IMPORT INFRASTRUCTURE ----------
+// Parses CSV text into an array of objects keyed by header (trimmed, as-is from file).
+// Handles quoted fields (including embedded commas and escaped "" quotes).
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  // Normalize line endings, strip BOM
+  text = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+
+  // Drop fully-empty trailing rows
+  while (rows.length && rows[rows.length-1].every(c => c.trim() === '')) rows.pop();
+  if (rows.length === 0) return [];
+
+  const headers = rows[0].map(h => h.trim());
+  return rows.slice(1).map(r => {
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = (r[i] ?? '').trim(); });
+    return obj;
+  });
+}
+
+// Opens a native file picker for .csv, reads it, and calls onParsed(rowsArray, fileName).
+function triggerCSVImport(onParsed) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.csv,text/csv';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    document.body.removeChild(input);
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const rows = parseCSV(e.target.result);
+        if (rows.length === 0) {
+          toast('That CSV file has no data rows', 'warn');
+          return;
+        }
+        onParsed(rows, file.name);
+      } catch (err) {
+        toast('Could not read that CSV file: ' + err.message, 'error');
+      }
+    };
+    reader.onerror = () => toast('Could not read that file', 'error');
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+// Shows a results summary modal after an import run.
+// results = { total, success, errors: [{row, reason}] }
+function showImportSummary(title, results, onDone) {
+  const hasErrors = results.errors.length > 0;
+  openModal(`
+    <div class="modal-header"><h3>${esc(title)}</h3><button class="modal-close">×</button></div>
+    <div class="modal-body">
+      <div class="stat-grid" style="margin-bottom:16px;">
+        <div class="stat-card ok"><div class="label">Imported</div><div class="value">${results.success}</div></div>
+        <div class="stat-card ${hasErrors ? 'danger' : ''}"><div class="label">Skipped</div><div class="value">${results.errors.length}</div></div>
+        <div class="stat-card"><div class="label">Total Rows</div><div class="value">${results.total}</div></div>
+      </div>
+      ${hasErrors ? `
+        <div style="font-size:13px;font-weight:700;color:var(--danger);margin-bottom:8px;">Rows skipped:</div>
+        <div style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+          <table style="width:100%;font-size:12.5px;">
+            <thead><tr><th style="padding:8px 10px;">Row</th><th style="padding:8px 10px;">Reason</th></tr></thead>
+            <tbody>
+              ${results.errors.map(e => `<tr><td style="padding:7px 10px;border-top:1px solid var(--border);">${e.row}</td><td style="padding:7px 10px;border-top:1px solid var(--border);color:var(--danger);">${esc(e.reason)}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : `<div class="empty-state" style="padding:10px;"><span class="ic">✅</span>All rows imported successfully</div>`}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary modal-close" id="importDoneBtn">Done</button>
+    </div>
+  `);
+  $('#importDoneBtn').addEventListener('click', () => { if (onDone) onDone(); });
 }
 
 // ---------- 4. MODAL SYSTEM ----------
@@ -496,6 +629,7 @@ PAGE_RENDERERS.categories = async function renderCategories() {
         <input type="text" id="catSearch" placeholder="Search categories...">
       </div>
       <div style="margin-left:auto;" class="card-actions">
+        <button class="btn btn-secondary btn-sm" id="importCatBtn">⬆ Import CSV</button>
         <button class="btn btn-secondary btn-sm" id="exportCatBtn">⬇ Export CSV</button>
         <button class="btn btn-secondary btn-sm" id="printCatBtn">🖨 Print</button>
         <button class="btn btn-primary btn-sm" id="addCatBtn">+ Add Category</button>
@@ -611,6 +745,30 @@ PAGE_RENDERERS.categories = async function renderCategories() {
       { label: 'Created', get: c => fmtDate(c.created_at) },
     ]);
   });
+  $('#importCatBtn').addEventListener('click', () => {
+    triggerCSVImport(async (rows) => {
+      const results = { total: rows.length, success: 0, errors: [] };
+      const existingNames = new Set(allCats.map(c => c.name.toLowerCase()));
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const rowLabel = `Row ${i + 2}`; // +2: header is row 1, data starts row 2
+        const name = (r['Name'] ?? r['Category Name'] ?? '').trim();
+        const description = (r['Description'] ?? '').trim();
+
+        if (!name) { results.errors.push({ row: rowLabel, reason: 'Missing category name' }); continue; }
+        if (existingNames.has(name.toLowerCase())) { results.errors.push({ row: rowLabel, reason: `"${name}" already exists — skipped` }); continue; }
+
+        const { error } = await sb.from('categories').insert({ name, description: description || null });
+        if (error) { results.errors.push({ row: rowLabel, reason: error.message }); continue; }
+        existingNames.add(name.toLowerCase());
+        results.success++;
+      }
+
+      await loadAndRender();
+      showImportSummary('Import Categories — Results', results);
+    });
+  });
 
   await loadAndRender();
 };
@@ -627,6 +785,7 @@ PAGE_RENDERERS.suppliers = async function renderSuppliers() {
         <input type="text" id="supSearch" placeholder="Search suppliers...">
       </div>
       <div style="margin-left:auto;" class="card-actions">
+        <button class="btn btn-secondary btn-sm" id="importSupBtn">⬆ Import CSV</button>
         <button class="btn btn-secondary btn-sm" id="exportSupBtn">⬇ Export CSV</button>
         <button class="btn btn-secondary btn-sm" id="printSupBtn">🖨 Print</button>
         <button class="btn btn-primary btn-sm" id="addSupBtn">+ Add Supplier</button>
@@ -766,6 +925,35 @@ PAGE_RENDERERS.suppliers = async function renderSuppliers() {
       { label: 'Product Count', key: 'productCount' },
     ]);
   });
+  $('#importSupBtn').addEventListener('click', () => {
+    triggerCSVImport(async (rows) => {
+      const results = { total: rows.length, success: 0, errors: [] };
+      const existingNames = new Set(allSups.map(s => s.name.toLowerCase()));
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const rowLabel = `Row ${i + 2}`;
+        const name = (r['Name'] ?? r['Supplier Name'] ?? '').trim();
+        if (!name) { results.errors.push({ row: rowLabel, reason: 'Missing supplier name' }); continue; }
+        if (existingNames.has(name.toLowerCase())) { results.errors.push({ row: rowLabel, reason: `"${name}" already exists — skipped` }); continue; }
+
+        const payload = {
+          name,
+          contact_person: (r['Contact Person'] ?? '').trim() || null,
+          phone: (r['Phone'] ?? '').trim() || null,
+          email: (r['Email'] ?? '').trim() || null,
+          address: (r['Address'] ?? '').trim() || null,
+        };
+        const { error } = await sb.from('suppliers').insert(payload);
+        if (error) { results.errors.push({ row: rowLabel, reason: error.message }); continue; }
+        existingNames.add(name.toLowerCase());
+        results.success++;
+      }
+
+      await loadAndRender();
+      showImportSummary('Import Suppliers — Results', results);
+    });
+  });
 
   await loadAndRender();
 };
@@ -791,6 +979,7 @@ PAGE_RENDERERS.products = async function renderProducts() {
         <option value="ok">OK</option>
       </select>
       <div style="margin-left:auto;" class="card-actions">
+        <button class="btn btn-secondary btn-sm" id="importProdBtn">⬆ Import CSV</button>
         <button class="btn btn-secondary btn-sm" id="exportProdBtn">⬇ Export CSV</button>
         <button class="btn btn-secondary btn-sm" id="printProdBtn">🖨 Print</button>
         <button class="btn btn-primary btn-sm" id="addProdBtn">+ Add Product</button>
@@ -1024,6 +1213,70 @@ PAGE_RENDERERS.products = async function renderProducts() {
       { label: 'Status', get: p => p._status.label },
     ]);
   });
+  $('#importProdBtn').addEventListener('click', () => {
+    triggerCSVImport(async (rows) => {
+      const results = { total: rows.length, success: 0, errors: [] };
+      const catByName = new Map(cats.map(c => [c.name.toLowerCase(), c.id]));
+      const supByName = new Map(sups.map(s => [s.name.toLowerCase(), s.id]));
+      const existingSkus = new Set(allProds.filter(p => p.sku).map(p => p.sku.toLowerCase()));
+      const existingNames = new Set(allProds.map(p => p.name.toLowerCase()));
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const rowLabel = `Row ${i + 2}`;
+        const name = (r['Product Name'] ?? r['Name'] ?? '').trim();
+        if (!name) { results.errors.push({ row: rowLabel, reason: 'Missing product name' }); continue; }
+        if (existingNames.has(name.toLowerCase())) { results.errors.push({ row: rowLabel, reason: `"${name}" already exists — skipped` }); continue; }
+
+        const sku = (r['SKU'] ?? '').trim() || null;
+        if (sku && existingSkus.has(sku.toLowerCase())) { results.errors.push({ row: rowLabel, reason: `SKU "${sku}" already exists — skipped` }); continue; }
+
+        const costPrice = parseFloat(r['Cost Price (ZMW)'] ?? r['Cost Price'] ?? '');
+        const sellPrice = parseFloat(r['Selling Price (ZMW)'] ?? r['Selling Price'] ?? '');
+        if (isNaN(costPrice) || isNaN(sellPrice)) { results.errors.push({ row: rowLabel, reason: 'Missing or invalid Cost Price / Selling Price' }); continue; }
+
+        const catName = (r['Category'] ?? '').trim();
+        let categoryId = null;
+        if (catName) {
+          categoryId = catByName.get(catName.toLowerCase());
+          if (!categoryId) { results.errors.push({ row: rowLabel, reason: `Category "${catName}" not found — add it first` }); continue; }
+        }
+
+        const supName = (r['Supplier'] ?? '').trim();
+        let supplierId = null;
+        if (supName) {
+          supplierId = supByName.get(supName.toLowerCase());
+          if (!supplierId) { results.errors.push({ row: rowLabel, reason: `Supplier "${supName}" not found — add it first` }); continue; }
+        }
+
+        const openingStock = parseFloat(r['Opening Stock'] ?? r['Quantity'] ?? '0') || 0;
+        const reorderLevel = parseFloat(r['Reorder Level'] ?? '') || (STATE.settings.low_stock_default || 10);
+        const expiryRaw = r['Expiry Date'] ?? '';
+        const expiryDate = parseCSVDate(expiryRaw);
+        if (expiryRaw && expiryRaw.trim() && !expiryDate) { results.errors.push({ row: rowLabel, reason: `Could not understand expiry date "${expiryRaw}"` }); continue; }
+
+        const payload = {
+          name, sku,
+          category_id: categoryId,
+          supplier_id: supplierId,
+          unit: (r['Unit'] ?? '').trim() || 'pcs',
+          cost_price: costPrice,
+          selling_price: sellPrice,
+          quantity: openingStock,
+          reorder_level: reorderLevel,
+          expiry_date: expiryDate,
+        };
+        const { error } = await sb.from('products').insert(payload);
+        if (error) { results.errors.push({ row: rowLabel, reason: error.message }); continue; }
+        existingNames.add(name.toLowerCase());
+        if (sku) existingSkus.add(sku.toLowerCase());
+        results.success++;
+      }
+
+      await loadAndRender();
+      showImportSummary('Import Products — Results', results);
+    });
+  });
 
   await loadAndRender();
 };
@@ -1042,6 +1295,7 @@ PAGE_RENDERERS.purchases = async function renderPurchases() {
       <input type="date" class="filter-select" id="purFromDate">
       <input type="date" class="filter-select" id="purToDate">
       <div style="margin-left:auto;" class="card-actions">
+        <button class="btn btn-secondary btn-sm" id="importPurBtn">⬆ Import CSV</button>
         <button class="btn btn-secondary btn-sm" id="exportPurBtn">⬇ Export CSV</button>
         <button class="btn btn-secondary btn-sm" id="printPurBtn">🖨 Print</button>
         <button class="btn btn-primary btn-sm" id="addPurBtn">+ Record Purchase</button>
@@ -1245,6 +1499,59 @@ PAGE_RENDERERS.purchases = async function renderPurchases() {
       { label: 'Recorded By', get: p => p.profiles?.full_name || '' },
     ]);
   });
+  $('#importPurBtn').addEventListener('click', () => {
+    if (products.length === 0) {
+      toast('Add products first before importing purchases', 'warn');
+      return;
+    }
+    triggerCSVImport(async (rows) => {
+      const results = { total: rows.length, success: 0, errors: [] };
+      const prodByName = new Map(products.map(p => [p.name.toLowerCase(), p]));
+      const supByName = new Map(suppliers.map(s => [s.name.toLowerCase(), s.id]));
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const rowLabel = `Row ${i + 2}`;
+        const prodName = (r['Product Name'] ?? r['Product'] ?? '').trim();
+        if (!prodName) { results.errors.push({ row: rowLabel, reason: 'Missing product name' }); continue; }
+        const product = prodByName.get(prodName.toLowerCase());
+        if (!product) { results.errors.push({ row: rowLabel, reason: `Product "${prodName}" not found — add it first` }); continue; }
+
+        const qty = parseFloat(r['Quantity'] ?? '');
+        if (isNaN(qty) || qty <= 0) { results.errors.push({ row: rowLabel, reason: 'Missing or invalid Quantity' }); continue; }
+
+        const costPrice = parseFloat(r['Cost Price/Unit (ZMW)'] ?? r['Cost Price'] ?? r['Cost Price/Unit'] ?? '');
+        if (isNaN(costPrice) || costPrice < 0) { results.errors.push({ row: rowLabel, reason: 'Missing or invalid Cost Price' }); continue; }
+
+        const supName = (r['Supplier'] ?? '').trim();
+        let supplierId = null;
+        if (supName) {
+          supplierId = supByName.get(supName.toLowerCase());
+          if (!supplierId) { results.errors.push({ row: rowLabel, reason: `Supplier "${supName}" not found — add it first` }); continue; }
+        }
+
+        const dateRaw = r['Purchase Date'] ?? '';
+        const purchaseDate = parseCSVDate(dateRaw) || new Date().toISOString().slice(0, 10);
+        if (dateRaw && dateRaw.trim() && !parseCSVDate(dateRaw)) { results.errors.push({ row: rowLabel, reason: `Could not understand date "${dateRaw}"` }); continue; }
+
+        const { error } = await sb.from('purchases').insert({
+          product_id: product.id,
+          supplier_id: supplierId,
+          quantity: qty,
+          cost_price: costPrice,
+          purchase_date: purchaseDate,
+          invoice_no: (r['Invoice #'] ?? r['Invoice'] ?? '').trim() || null,
+          notes: (r['Notes'] ?? '').trim() || null,
+          created_by: STATE.profile.id,
+        });
+        if (error) { results.errors.push({ row: rowLabel, reason: error.message }); continue; }
+        results.success++;
+      }
+
+      await loadAndRender();
+      showImportSummary('Import Purchases — Results', results);
+    });
+  });
 
   await loadAndRender();
 };
@@ -1263,6 +1570,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
       <input type="date" class="filter-select" id="saleFromDate">
       <input type="date" class="filter-select" id="saleToDate">
       <div style="margin-left:auto;" class="card-actions">
+        <button class="btn btn-secondary btn-sm" id="importSaleBtn">⬆ Import CSV</button>
         <button class="btn btn-secondary btn-sm" id="exportSaleBtn">⬇ Export CSV</button>
         <button class="btn btn-secondary btn-sm" id="printSaleBtn">🖨 Print</button>
         <button class="btn btn-primary btn-sm" id="addSaleBtn">+ Record Sale</button>
@@ -1475,6 +1783,59 @@ PAGE_RENDERERS.sales = async function renderSales() {
       { label: 'Total', key: 'total' },
       { label: 'Recorded By', get: s => s.profiles?.full_name || '' },
     ]);
+  });
+  $('#importSaleBtn').addEventListener('click', () => {
+    if (products.length === 0) {
+      toast('Add products first before importing sales', 'warn');
+      return;
+    }
+    triggerCSVImport(async (rows) => {
+      const results = { total: rows.length, success: 0, errors: [] };
+      const prodByName = new Map(products.map(p => [p.name.toLowerCase(), p]));
+      // Track a running stock balance per product as we process rows in order,
+      // so a CSV with several sales of the same product validates correctly
+      // against each other, not just against the stock level at import start.
+      const runningStock = new Map(products.map(p => [p.id, Number(p.quantity)]));
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const rowLabel = `Row ${i + 2}`;
+        const prodName = (r['Product Name'] ?? r['Product'] ?? '').trim();
+        if (!prodName) { results.errors.push({ row: rowLabel, reason: 'Missing product name' }); continue; }
+        const product = prodByName.get(prodName.toLowerCase());
+        if (!product) { results.errors.push({ row: rowLabel, reason: `Product "${prodName}" not found — add it first` }); continue; }
+
+        const qty = parseFloat(r['Quantity'] ?? '');
+        if (isNaN(qty) || qty <= 0) { results.errors.push({ row: rowLabel, reason: 'Missing or invalid Quantity' }); continue; }
+
+        const available = runningStock.get(product.id) ?? 0;
+        if (qty > available) { results.errors.push({ row: rowLabel, reason: `Insufficient stock for "${prodName}" — only ${available} available at this point in the import` }); continue; }
+
+        const price = parseFloat(r['Price/Unit (ZMW)'] ?? r['Price/Unit'] ?? r['Price'] ?? '');
+        if (isNaN(price) || price < 0) { results.errors.push({ row: rowLabel, reason: 'Missing or invalid Price/Unit' }); continue; }
+
+        const dateRaw = r['Sale Date'] ?? '';
+        const saleDate = parseCSVDate(dateRaw) || new Date().toISOString().slice(0, 10);
+        if (dateRaw && dateRaw.trim() && !parseCSVDate(dateRaw)) { results.errors.push({ row: rowLabel, reason: `Could not understand date "${dateRaw}"` }); continue; }
+
+        const { error } = await sb.from('sales').insert({
+          product_id: product.id,
+          quantity: qty,
+          sale_price: price,
+          total: qty * price,
+          sale_date: saleDate,
+          notes: (r['Notes'] ?? '').trim() || null,
+          created_by: STATE.profile.id,
+        });
+        if (error) { results.errors.push({ row: rowLabel, reason: error.message }); continue; }
+        runningStock.set(product.id, available - qty);
+        results.success++;
+      }
+
+      await loadAndRender();
+      await loadNotifications();
+      showImportSummary('Import Sales — Results', results);
+    });
   });
 
   await loadAndRender();
