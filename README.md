@@ -18,6 +18,12 @@ on GitHub Pages — same pattern as your other projects.
    Authentication → Settings, so new accounts can log in immediately without
    clicking a confirmation email.
 
+> **Already set up Gerpe Pharmacy before and just updating the app?**
+> Run **`migration_v2.sql`** once in the SQL Editor instead of the full
+> `schema.sql` — it adds the new Sales discount column and Expired Stock
+> Loss views without touching any of your existing data. `schema.sql` is
+> only for a brand-new project.
+
 ## 2. Create your first user (yourself, as Admin)
 
 1. Go to **Authentication → Users → Add user**.
@@ -83,17 +89,23 @@ default), where an Admin can promote it, rename it, or deactivate it.
   automatically via a database trigger (no manual math, no risk of drift).
 - **Sales** — record items sold; quantity decreases automatically, and
   overselling is blocked at the database level (can't sell more than
-  what's in stock).
+  what's in stock). Supports a fixed-amount **discount** per sale — the
+  total is always calculated server-side as `(quantity × price) − discount`,
+  so it can never drift out of sync with what was actually charged.
 - **Suppliers** — manage supplier contacts, see how many products link
   to each.
 - **Categories** — organize products, see product counts per category.
 
 **Supporting features**
 - **Dashboard** — today's sales, out-of-stock/low-stock/expired counts,
-  a 14-day sales trend chart, live stock alerts, recent sales feed.
-- **Reports** — date-range filtered: sales by product (with estimated
-  profit), purchases by supplier, current inventory valuation. Every
-  list page also has Export CSV and Print buttons.
+  a 14-day sales trend chart, live stock alerts, recent sales feed, plus
+  total **expired stock loss** value and stock value net of that loss.
+- **Reports** — date-range filtered: sales by product (with discount given
+  and estimated profit), purchases by supplier, current inventory
+  valuation, and a dedicated **Expired Stock Loss Report** (always
+  reflects current expired stock regardless of the date filter, since
+  expiry is a present-moment fact, not a period transaction). Every
+  report has Export CSV and Print buttons.
 - **Import CSV** — every list page (Categories, Suppliers, Products,
   Purchases, Sales) also has an **Import CSV** button next to Export.
   Pick a `.csv` file and the app reads it, validates each row, and

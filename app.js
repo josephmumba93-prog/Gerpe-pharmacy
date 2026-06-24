@@ -5,8 +5,8 @@
 // ---------- 1. SUPABASE CONFIG ----------
 // Replace these two values with your own Supabase project credentials.
 // Find them in: Supabase Dashboard > Project Settings > API
-const SUPABASE_URL = "https://jrxvoxddcbugbdoecekb.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpyeHZveGRkY2J1Z2Jkb2VjZWtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIwMzExNjcsImV4cCI6MjA5NzYwNzE2N30.eYFMaywJyjsGni0txlO1E5PnNFvJCPeSxObm9egX0us";
+const SUPABASE_URL = "YOUR_SUPABASE_URL_HERE";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY_HERE";
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -485,6 +485,8 @@ PAGE_RENDERERS.dashboard = async function renderDashboard() {
     { data: todaySales },
     { data: recentSales },
     { data: salesSummary },
+    { data: expiredLoss },
+    { data: inventoryValue },
   ] = await Promise.all([
     sb.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true),
     sb.from('v_out_of_stock').select('*'),
@@ -494,10 +496,15 @@ PAGE_RENDERERS.dashboard = async function renderDashboard() {
     sb.from('sales').select('total, quantity').eq('sale_date', new Date().toISOString().slice(0,10)),
     sb.from('sales').select('*, products(name)').order('created_at', { ascending: false }).limit(8),
     sb.from('v_sales_summary').select('*').limit(14),
+    sb.from('v_expired_stock_loss').select('*'),
+    sb.from('v_inventory_value_summary').select('*').maybeSingle(),
   ]);
 
   const todayRevenue = (todaySales || []).reduce((s, r) => s + Number(r.total || 0), 0);
   const todayCount = (todaySales || []).length;
+  const expiredLossTotal = (expiredLoss || []).reduce((s, r) => s + Number(r.loss_value || 0), 0);
+  const expiredLossQty = (expiredLoss || []).reduce((s, r) => s + Number(r.quantity || 0), 0);
+  const netStockValue = inventoryValue ? Number(inventoryValue.good_stock_value) : 0;
 
   content.innerHTML = `
     <div class="stat-grid">
@@ -530,6 +537,16 @@ PAGE_RENDERERS.dashboard = async function renderDashboard() {
         <div class="label">Expiring Soon</div>
         <div class="value">${(expiringSoon||[]).length}</div>
         <div class="sub">Within ${STATE.settings.expiry_warning_days} days</div>
+      </div>
+      <div class="stat-card ${expiredLossTotal > 0 ? 'danger' : 'ok'}">
+        <div class="label">Expired Stock Loss</div>
+        <div class="value">${fmtMoney(expiredLossTotal)}</div>
+        <div class="sub">${expiredLossQty} units at cost price</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Stock Value (net of expiry)</div>
+        <div class="value">${fmtMoney(netStockValue)}</div>
+        <div class="sub">at cost price</div>
       </div>
     </div>
 
@@ -1582,9 +1599,9 @@ PAGE_RENDERERS.sales = async function renderSales() {
         <table>
           <thead><tr>
             <th>Date</th><th>Product</th><th>Qty</th><th>Price/Unit</th>
-            <th>Total</th><th>Recorded By</th><th class="no-print">Actions</th>
+            <th>Discount</th><th>Total</th><th>Recorded By</th><th class="no-print">Actions</th>
           </tr></thead>
-          <tbody id="saleTableBody"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody>
+          <tbody id="saleTableBody"><tr><td colspan="8" class="empty-state">Loading...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1621,9 +1638,11 @@ PAGE_RENDERERS.sales = async function renderSales() {
   function renderStats(rows) {
     const totalRevenue = rows.reduce((s,r) => s + Number(r.total), 0);
     const totalQty = rows.reduce((s,r) => s + Number(r.quantity), 0);
+    const totalDiscount = rows.reduce((s,r) => s + Number(r.discount || 0), 0);
     $('#saleStatGrid').innerHTML = `
       <div class="stat-card"><div class="label">Total Sales</div><div class="value">${rows.length}</div></div>
       <div class="stat-card"><div class="label">Units Sold</div><div class="value">${totalQty}</div></div>
+      <div class="stat-card warn"><div class="label">Total Discount Given</div><div class="value">${fmtMoney(totalDiscount)}</div></div>
       <div class="stat-card ok"><div class="label">Total Revenue</div><div class="value">${fmtMoney(totalRevenue)}</div></div>
     `;
   }
@@ -1631,7 +1650,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
   function renderTable(rows) {
     const tbody = $('#saleTableBody');
     if (rows.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty-state"><span class="ic">⬆️</span>No sales recorded</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="empty-state"><span class="ic">⬆️</span>No sales recorded</td></tr>`;
       return;
     }
     tbody.innerHTML = rows.map(s => `
@@ -1640,6 +1659,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
         <td><strong>${esc(s.products?.name || '—')}</strong></td>
         <td>${s.quantity} ${esc(s.products?.unit||'')}</td>
         <td>${fmtMoney(s.sale_price)}</td>
+        <td>${Number(s.discount) > 0 ? `<span style="color:var(--danger);">- ${fmtMoney(s.discount)}</span>` : '—'}</td>
         <td>${fmtMoney(s.total)}</td>
         <td>${esc(s.profiles?.full_name || '—')}</td>
         <td class="no-print">
@@ -1679,17 +1699,31 @@ PAGE_RENDERERS.sales = async function renderSales() {
               <input type="number" id="salePrice" step="0.01" min="0" required>
             </div>
           </div>
-          <div class="form-group">
-            <label>Sale Date *</label>
-            <input type="date" id="saleDate" required value="${new Date().toISOString().slice(0,10)}">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Discount (${STATE.settings.currency || 'ZMW'})</label>
+              <input type="number" id="saleDiscount" step="0.01" min="0" value="0">
+              <div class="help-text">Fixed amount off the total, not a percentage</div>
+            </div>
+            <div class="form-group">
+              <label>Sale Date *</label>
+              <input type="date" id="saleDate" required value="${new Date().toISOString().slice(0,10)}">
+            </div>
           </div>
           <div class="form-group">
             <label>Notes</label>
             <textarea id="saleNotes" rows="2" placeholder="e.g. customer name, prescription ref"></textarea>
           </div>
-          <div class="form-group mb-0">
-            <label>Total</label>
-            <input type="text" id="saleTotalDisplay" disabled value="${fmtMoney(0)}">
+          <div class="form-group mb-0" style="background:var(--bg);border-radius:8px;padding:12px 14px;">
+            <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);margin-bottom:4px;">
+              <span>Subtotal</span><span id="saleSubtotalDisplay">${fmtMoney(0)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--danger);margin-bottom:6px;">
+              <span>Discount</span><span id="saleDiscountDisplay">- ${fmtMoney(0)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:var(--navy);border-top:1px solid var(--border);padding-top:6px;">
+              <span>Total</span><span id="saleTotalDisplay">${fmtMoney(0)}</span>
+            </div>
           </div>
         </form>
       </div>
@@ -1702,7 +1736,12 @@ PAGE_RENDERERS.sales = async function renderSales() {
     function updateTotal() {
       const qty = parseFloat($('#saleQty').value) || 0;
       const price = parseFloat($('#salePrice').value) || 0;
-      $('#saleTotalDisplay').value = fmtMoney(qty * price);
+      const discount = parseFloat($('#saleDiscount').value) || 0;
+      const subtotal = qty * price;
+      const total = Math.max(subtotal - discount, 0);
+      $('#saleSubtotalDisplay').textContent = fmtMoney(subtotal);
+      $('#saleDiscountDisplay').textContent = '- ' + fmtMoney(discount);
+      $('#saleTotalDisplay').textContent = fmtMoney(total);
     }
 
     $('#saleProduct').addEventListener('change', (e) => {
@@ -1717,15 +1756,19 @@ PAGE_RENDERERS.sales = async function renderSales() {
     });
     $('#saleQty').addEventListener('input', updateTotal);
     $('#salePrice').addEventListener('input', updateTotal);
+    $('#saleDiscount').addEventListener('input', updateTotal);
 
     $('#saveSaleBtn').addEventListener('click', async () => {
       const productId = $('#saleProduct').value;
       const qty = parseFloat($('#saleQty').value);
       const price = parseFloat($('#salePrice').value);
+      const discount = parseFloat($('#saleDiscount').value) || 0;
       const date = $('#saleDate').value;
       if (!productId) { toast('Select a product', 'error'); return; }
       if (isNaN(qty) || qty <= 0) { toast('Enter a valid quantity', 'error'); return; }
       if (isNaN(price) || price < 0) { toast('Enter a valid price', 'error'); return; }
+      if (discount < 0) { toast('Discount cannot be negative', 'error'); return; }
+      if (discount > qty * price) { toast('Discount cannot exceed the sale subtotal', 'error'); return; }
 
       const opt = $('#saleProduct').selectedOptions[0];
       const availableStock = parseFloat(opt.dataset.stock);
@@ -1741,7 +1784,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
         product_id: productId,
         quantity: qty,
         sale_price: price,
-        total: qty * price,
+        discount: discount,
         sale_date: date,
         notes: $('#saleNotes').value.trim() || null,
         created_by: STATE.profile.id,
@@ -1750,7 +1793,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
       btn.disabled = false; btn.textContent = 'Record Sale';
 
       if (error) {
-        toast(error.message.includes('Insufficient stock') ? error.message : error.message, 'error');
+        toast(error.message, 'error');
         return;
       }
       toast('Sale recorded — stock updated', 'success');
@@ -1780,6 +1823,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
       { label: 'Product', get: s => s.products?.name || '' },
       { label: 'Quantity', key: 'quantity' },
       { label: 'Price/Unit', key: 'sale_price' },
+      { label: 'Discount', key: 'discount' },
       { label: 'Total', key: 'total' },
       { label: 'Recorded By', get: s => s.profiles?.full_name || '' },
     ]);
@@ -1814,6 +1858,10 @@ PAGE_RENDERERS.sales = async function renderSales() {
         const price = parseFloat(r['Price/Unit (ZMW)'] ?? r['Price/Unit'] ?? r['Price'] ?? '');
         if (isNaN(price) || price < 0) { results.errors.push({ row: rowLabel, reason: 'Missing or invalid Price/Unit' }); continue; }
 
+        const discount = parseFloat(r['Discount'] ?? '0') || 0;
+        if (discount < 0) { results.errors.push({ row: rowLabel, reason: 'Discount cannot be negative' }); continue; }
+        if (discount > qty * price) { results.errors.push({ row: rowLabel, reason: 'Discount cannot exceed the sale subtotal' }); continue; }
+
         const dateRaw = r['Sale Date'] ?? '';
         const saleDate = parseCSVDate(dateRaw) || new Date().toISOString().slice(0, 10);
         if (dateRaw && dateRaw.trim() && !parseCSVDate(dateRaw)) { results.errors.push({ row: rowLabel, reason: `Could not understand date "${dateRaw}"` }); continue; }
@@ -1822,7 +1870,7 @@ PAGE_RENDERERS.sales = async function renderSales() {
           product_id: product.id,
           quantity: qty,
           sale_price: price,
-          total: qty * price,
+          discount: discount,
           sale_date: saleDate,
           notes: (r['Notes'] ?? '').trim() || null,
           created_by: STATE.profile.id,
@@ -1866,8 +1914,8 @@ PAGE_RENDERERS.reports = async function renderReports() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Product</th><th>Units Sold</th><th>Revenue</th><th>Est. Cost</th><th>Est. Profit</th></tr></thead>
-          <tbody id="salesByProdBody"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
+          <thead><tr><th>Product</th><th>Units Sold</th><th>Revenue</th><th>Discount Given</th><th>Est. Cost</th><th>Est. Profit</th></tr></thead>
+          <tbody id="salesByProdBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1897,6 +1945,22 @@ PAGE_RENDERERS.reports = async function renderReports() {
         </table>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3>Expired Stock Loss Report</h3>
+        <button class="btn btn-secondary btn-sm no-print" id="exportExpLossBtn">⬇ Export CSV</button>
+      </div>
+      <div class="card-body" style="padding-bottom:0;">
+        <div class="stat-grid" id="expLossStatGrid" style="margin-bottom:16px;"></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Product</th><th>SKU</th><th>Quantity Expired</th><th>Cost Price</th><th>Value Lost</th><th>Expired On</th></tr></thead>
+          <tbody id="expLossBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   `;
 
   // Default period: last 30 days
@@ -1905,41 +1969,61 @@ PAGE_RENDERERS.reports = async function renderReports() {
   $('#repFromDate').value = monthAgo.toISOString().slice(0,10);
   $('#repToDate').value = today.toISOString().slice(0,10);
 
-  let cachedSalesByProd = [], cachedPurBySup = [], cachedInv = [];
+  let cachedSalesByProd = [], cachedPurBySup = [], cachedInv = [], cachedExpLoss = [];
 
   async function loadAndRender() {
     const from = $('#repFromDate').value;
     const to = $('#repToDate').value;
 
-    const [{ data: sales }, { data: purchases }, { data: products }] = await Promise.all([
-      sb.from('sales').select('*, products(name, cost_price)').gte('sale_date', from).lte('sale_date', to),
-      sb.from('purchases').select('*, suppliers(name)').gte('purchase_date', from).lte('purchase_date', to),
-      sb.from('products').select('*, categories(name)').eq('is_active', true),
-    ]);
+    if (!from || !to) {
+      toast('Please choose both a start and end date', 'warn');
+      return;
+    }
+    if (from > to) {
+      toast('Start date must be before end date', 'warn');
+      return;
+    }
+
+    const btn = $('#repApplyBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+
+    try {
+      const [{ data: sales, error: salesErr }, { data: purchases, error: purErr }, { data: products, error: prodErr }] = await Promise.all([
+        sb.from('sales').select('*, products(name, cost_price)').gte('sale_date', from).lte('sale_date', to),
+        sb.from('purchases').select('*, suppliers(name)').gte('purchase_date', from).lte('purchase_date', to),
+        sb.from('products').select('*, categories(name)').eq('is_active', true),
+      ]);
+      if (salesErr || purErr || prodErr) {
+        toast('Could not load report data: ' + (salesErr || purErr || prodErr).message, 'error');
+        return;
+      }
 
     // --- Sales by product ---
     const prodMap = {};
     (sales||[]).forEach(s => {
       const key = s.product_id;
-      if (!prodMap[key]) prodMap[key] = { name: s.products?.name || 'Unknown', units: 0, revenue: 0, cost: 0 };
+      if (!prodMap[key]) prodMap[key] = { name: s.products?.name || 'Unknown', units: 0, revenue: 0, discount: 0, cost: 0 };
       prodMap[key].units += Number(s.quantity);
       prodMap[key].revenue += Number(s.total);
+      prodMap[key].discount += Number(s.discount || 0);
       prodMap[key].cost += Number(s.quantity) * Number(s.products?.cost_price || 0);
     });
     cachedSalesByProd = Object.values(prodMap).sort((a,b) => b.revenue - a.revenue);
 
     const totalRevenue = cachedSalesByProd.reduce((s,r)=>s+r.revenue,0);
+    const totalDiscount = cachedSalesByProd.reduce((s,r)=>s+r.discount,0);
     const totalCost = cachedSalesByProd.reduce((s,r)=>s+r.cost,0);
     const totalProfit = totalRevenue - totalCost;
     const totalUnitsSold = cachedSalesByProd.reduce((s,r)=>s+r.units,0);
 
     $('#salesByProdBody').innerHTML = cachedSalesByProd.length === 0
-      ? '<tr><td colspan="5" class="empty-state">No sales in this period</td></tr>'
+      ? '<tr><td colspan="6" class="empty-state">No sales in this period</td></tr>'
       : cachedSalesByProd.map(r => `
         <tr>
           <td><strong>${esc(r.name)}</strong></td>
           <td>${r.units}</td>
           <td>${fmtMoney(r.revenue)}</td>
+          <td>${r.discount > 0 ? `<span style="color:var(--danger);">- ${fmtMoney(r.discount)}</span>` : '—'}</td>
           <td>${fmtMoney(r.cost)}</td>
           <td style="color:${r.revenue-r.cost>=0?'var(--ok)':'var(--danger)'};">${fmtMoney(r.revenue-r.cost)}</td>
         </tr>
@@ -1992,14 +2076,55 @@ PAGE_RENDERERS.reports = async function renderReports() {
         </tr>
       `).join('');
 
+    // --- Expired Stock Loss (always reflects current state, not the date range,
+    //     since expiry is a present-moment fact rather than a period transaction) ---
+    cachedExpLoss = (products||[]).filter(p => {
+      if (!p.expiry_date) return false;
+      const exp = new Date(p.expiry_date);
+      return exp < todayD && Number(p.quantity) > 0;
+    }).map(p => ({
+      name: p.name, sku: p.sku, quantity: p.quantity, unit: p.unit,
+      cost_price: p.cost_price, loss_value: Number(p.quantity) * Number(p.cost_price),
+      expiry_date: p.expiry_date,
+    })).sort((a,b) => b.loss_value - a.loss_value);
+
+    const totalExpiredQty = cachedExpLoss.reduce((s,r)=>s+Number(r.quantity),0);
+    const totalExpiredLoss = cachedExpLoss.reduce((s,r)=>s+r.loss_value,0);
+    const netStockValue = totalStockValue - totalExpiredLoss;
+
+    $('#expLossStatGrid').innerHTML = `
+      <div class="stat-card danger"><div class="label">Products Affected</div><div class="value">${cachedExpLoss.length}</div></div>
+      <div class="stat-card danger"><div class="label">Total Quantity Expired</div><div class="value">${totalExpiredQty}</div></div>
+      <div class="stat-card danger"><div class="label">Total Value Lost</div><div class="value">${fmtMoney(totalExpiredLoss)}</div></div>
+    `;
+
+    $('#expLossBody').innerHTML = cachedExpLoss.length === 0
+      ? '<tr><td colspan="6" class="empty-state"><span class="ic">✅</span>No expired stock currently sitting in inventory</td></tr>'
+      : cachedExpLoss.map(r => `
+        <tr>
+          <td><strong>${esc(r.name)}</strong></td>
+          <td class="text-muted">${esc(r.sku || '—')}</td>
+          <td>${r.quantity} ${esc(r.unit)}</td>
+          <td>${fmtMoney(r.cost_price)}</td>
+          <td style="color:var(--danger);font-weight:600;">${fmtMoney(r.loss_value)}</td>
+          <td>${fmtDate(r.expiry_date)}</td>
+        </tr>
+      `).join('');
+
     // --- Top stat cards ---
     $('#repStatGrid').innerHTML = `
       <div class="stat-card ok"><div class="label">Revenue</div><div class="value">${fmtMoney(totalRevenue)}</div><div class="sub">${totalUnitsSold} units sold</div></div>
       <div class="stat-card"><div class="label">Cost of Goods Sold</div><div class="value">${fmtMoney(totalCost)}</div></div>
-      <div class="stat-card ${totalProfit>=0?'ok':'danger'}"><div class="label">Gross Profit</div><div class="value">${fmtMoney(totalProfit)}</div></div>
+      <div class="stat-card ${totalProfit>=0?'ok':'danger'}"><div class="label">Gross Profit</div><div class="value">${fmtMoney(totalProfit)}</div><div class="sub">${totalDiscount > 0 ? `after ${fmtMoney(totalDiscount)} discounts` : ''}</div></div>
       <div class="stat-card warn"><div class="label">Purchases Spent</div><div class="value">${fmtMoney(totalSpent)}</div></div>
-      <div class="stat-card"><div class="label">Current Stock Value</div><div class="value">${fmtMoney(totalStockValue)}</div><div class="sub">at cost price</div></div>
+      <div class="stat-card"><div class="label">Gross Stock Value</div><div class="value">${fmtMoney(totalStockValue)}</div><div class="sub">at cost price, before expiry loss</div></div>
+      <div class="stat-card ${totalExpiredLoss > 0 ? 'danger' : 'ok'}"><div class="label">Stock Value After Expiry Loss</div><div class="value">${fmtMoney(netStockValue)}</div><div class="sub">${totalExpiredLoss > 0 ? `- ${fmtMoney(totalExpiredLoss)} expired` : 'no expired stock'}</div></div>
     `;
+    } catch (err) {
+      toast('Something went wrong loading the report: ' + err.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Apply'; }
+    }
   }
 
   $('#repApplyBtn').addEventListener('click', loadAndRender);
@@ -2008,7 +2133,8 @@ PAGE_RENDERERS.reports = async function renderReports() {
   $('#exportSalesByProdBtn').addEventListener('click', () => {
     exportCSV('sales_by_product.csv', cachedSalesByProd, [
       { label:'Product', key:'name' }, { label:'Units Sold', key:'units' },
-      { label:'Revenue', key:'revenue' }, { label:'Est. Cost', key:'cost' },
+      { label:'Revenue', key:'revenue' }, { label:'Discount Given', key:'discount' },
+      { label:'Est. Cost', key:'cost' },
       { label:'Est. Profit', get:r=>(r.revenue-r.cost).toFixed(2) },
     ]);
   });
@@ -2022,6 +2148,14 @@ PAGE_RENDERERS.reports = async function renderReports() {
     exportCSV('inventory_status.csv', cachedInv, [
       { label:'Product', key:'name' }, { label:'Stock', get:r=>`${r.quantity} ${r.unit}` },
       { label:'Stock Value', key:'value' }, { label:'Status', key:'status' },
+    ]);
+  });
+  $('#exportExpLossBtn').addEventListener('click', () => {
+    exportCSV('expired_stock_loss.csv', cachedExpLoss, [
+      { label:'Product', key:'name' }, { label:'SKU', key:'sku' },
+      { label:'Quantity Expired', get:r=>`${r.quantity} ${r.unit}` },
+      { label:'Cost Price', key:'cost_price' }, { label:'Value Lost', key:'loss_value' },
+      { label:'Expired On', get:r=>fmtDate(r.expiry_date) },
     ]);
   });
 
